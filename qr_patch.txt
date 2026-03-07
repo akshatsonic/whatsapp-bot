@@ -1,0 +1,11 @@
+client.on('qr', (qr) => {
+    console.log('\n╔════════════════════════════════╗');
+    console.log('║  📱 SCAN QR CODE TO LOGIN      ║');
+    console.log('╚════════════════════════════════╝\n');
+    console.log('⚠️  No saved session found or session expired');
+    console.log('Settings > Linked Devices > Link a Device\n');
+    qrcode.generate(qr, { small: true });
+    console.log('\nWaiting for authentication...\n');
+    console.log('💡 Tip: After successful login, your session will be saved');
+    console.log('    and you won\'t need to scan QR code on next restart!\n');
+});

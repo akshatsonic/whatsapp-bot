@@ -1,0 +1,53 @@
+#!/usr/bin/env node
+
+const Database = require('better-sqlite3');
+
+const db = new Database('./whatsapp_bot.db');
+
+console.log('\n📊 DATABASE CHECK\n');
+console.log('='.repeat(60));
+
+// Check mota_queue
+const queueCount = db.prepare("SELECT COUNT(*) as count FROM mota_queue WHERE status = 'pending'").get();
+const allQueueCount = db.prepare("SELECT COUNT(*) as count FROM mota_queue").get();
+const queueItems = db.prepare(`
+    SELECT
+        id,
+        chat_name,
+        sender_name,
+        message_text,
+        question,
+        status,
+        datetime(timestamp, 'unixepoch', 'localtime') as time
+    FROM mota_queue
+    ORDER BY timestamp DESC
+    LIMIT 20
+`).all();
+
+console.log(`\n📥 Mota Queue Statistics:`);
+console.log(`   Total items ever: ${allQueueCount.count}`);
+console.log(`   Pending: ${queueCount.count}`);
+console.log('-'.repeat(60));
+
+if (queueItems.length === 0) {
+    console.log('\n⚠️  Queue is empty!');
+    console.log('\n💡 To add items to queue:');
+    console.log('   1. Send "@mota <question>" in a GROUP chat');
+    console.log('   2. Bot will add it to queue and process every 5 seconds');
+    console.log('   3. Bot processes messages from anyone (including yourself)\n');
+} else {
+    console.log(`\n📋 Queue Items (showing last ${queueItems.length}):\n`);
+    queueItems.forEach((item, i) => {
+        console.log(`#${i + 1} (Queue ID: ${item.id}) [${item.status.toUpperCase()}]`);
+        console.log(`  Chat: ${item.chat_name || 'Unknown'}`);
+        console.log(`  From: ${item.sender_name || 'Unknown'}`);
+        console.log(`  Text: "${item.message_text}"`);
+        console.log(`  Question: "${item.question || 'N/A'}"`);
+        console.log(`  Time: ${item.time}`);
+        console.log('');
+    });
+}
+
+console.log('='.repeat(60) + '\n');
+
+db.close();

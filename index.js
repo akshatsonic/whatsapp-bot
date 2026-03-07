@@ -1,9 +1,25 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
+const MessageDatabase = require('./db');
+const Anthropic = require('@anthropic-ai/sdk');
+const MCPClient = require('./mcp_client');
+require('dotenv').config();
+
+// Initialize database
+const db = new MessageDatabase();
+
+// Initialize Anthropic client
+const anthropic = new Anthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY,
+});
+
+// Initialize MCP client
+const mcpUrl = process.env.WHATSAPP_MCP_URL || 'http://localhost:8080';
+const mcpClient = new MCPClient(mcpUrl);
 
 // Create a new client instance with local authentication
 const client = new Client({
-    authStrategy: new LocalAuth(),
+    authStrategy: new LocalAuth({ clientId: "whatsapp-bot-session" }),
     puppeteer: {
         headless: true,
         args: [
@@ -16,7 +32,6 @@ const client = new Client({
             '--disable-gpu',
         ],
     },
-    // Pin a stable WhatsApp Web version to avoid breakage
     webVersionCache: {
         type: 'remote',
         remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1015901307-alpha.html',
@@ -29,12 +44,18 @@ client.on('qr', (qr) => {
     console.log('\n╔════════════════════════════════╗');
     console.log('║  📱 SCAN QR CODE TO LOGIN      ║');
     console.log('╚════════════════════════════════╝\n');
+    console.log('⚠️  No saved session found or session expired');
     console.log('Settings > Linked Devices > Link a Device\n');
     qrcode.generate(qr, { small: true });
     console.log('\nWaiting for authentication...\n');
+    console.log('💡 Tip: After successful login, your session will be saved');
+    console.log("    and you won't need to scan QR code on next restart!\n");
 });
 
 client.on('loading_screen', (percent, message) => {
+    if (percent === 0) {
+        console.log('✅ Saved session found! Using existing authentication...');
+    }
     console.log(`⏳ Loading: ${percent}% - ${message}`);
 });
 
@@ -54,18 +75,37 @@ client.on('ready', async () => {
     console.log(`📛 Bot Name:   ${client.info.pushname}`);
     console.log(`Listening for all events...\n`);
 
-    // Keep-alive ping every 30 seconds to prevent Puppeteer from going idle
+    // Test MCP connection (optional - for other tools)
+    try {
+        console.log('🔌 Connecting to MCP server (for reading tools only)...');
+        const tools = await mcpClient.getTools();
+        // Filter out send_message tool
+        const filteredTools = tools.filter(t => t.name !== 'send_message');
+        console.log(`✅ MCP connected! Available tools: ${filteredTools.map(t => t.name).join(', ')}\n`);
+    } catch (error) {
+        console.error('⚠️  MCP connection failed:', error.message);
+        console.log('   Bot will continue without MCP tools\n');
+    }
+
+    // Log database stats
+    const stats = db.getStats();
+    console.log(`📊 Queue Stats: ${stats.pendingQueueItems} pending\n`);
+
+    // Process mota_queue every 5 seconds
+    setInterval(() => processMotaQueue(), 5000);
+
+    // Keep-alive ping every 30 seconds
     setInterval(async () => {
         try {
             const state = await client.getState();
-            console.log(`💓 Keep-alive ping - State: ${state} [${new Date().toLocaleTimeString()}]`);
+            const stats = db.getStats();
+            console.log(`💓 Keep-alive ping - State: ${state} | Queue: ${stats.pendingQueueItems} pending [${new Date().toLocaleTimeString()}]`);
         } catch (err) {
             console.error('❌ Keep-alive ping failed:', err.message);
         }
     }, 30000);
 });
 
-// Recover from Puppeteer page crashes
 client.on('change_state', async (state) => {
     console.log(`🔄 [EVENT] change_state - State: ${state}`);
     if (state === 'CONFLICT' || state === 'UNLAUNCHED') {
@@ -80,23 +120,19 @@ client.on('disconnected', (reason) => {
 
 // ─── MESSAGE EVENTS ───────────────────────────────────────────────
 
-// Fires for messages received from OTHERS
 client.on('message', async (message) => {
     await handleMessage('message (from others)', message);
 });
 
-// Fires for ALL messages including ones you send yourself
 client.on('message_create', async (message) => {
     await handleMessage('message_create (all messages)', message);
 });
 
-// Fires when message is acknowledged (sent/delivered/read)
 client.on('message_ack', (message, ack) => {
     const ackMap = { 0: 'PENDING', 1: 'SENT', 2: 'DELIVERED', 3: 'READ', 4: 'PLAYED' };
     console.log(`📬 [EVENT] message_ack - Msg: "${message.body}" | Ack: ${ackMap[ack] || ack}`);
 });
 
-// Fires when a message is deleted for everyone
 client.on('message_revoke_everyone', (msg, revokedMsg) => {
     console.log(`🗑️  [EVENT] message_revoke_everyone - "${msg.body}" was deleted`);
 });
@@ -140,21 +176,39 @@ async function handleMessage(eventName, message) {
         console.log(`Is Group:  ${chat.isGroup}`);
         console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-        // Only respond in groups, to messages not from the bot itself
-        if (!chat.isGroup || message.fromMe) return;
-
+        // Check if should process @mota
         const hasMota = messageText.toLowerCase().startsWith('@mota') ||
                         messageText.toLowerCase().includes(' @mota');
 
         if (hasMota) {
-            console.log(`🎯 @mota DETECTED - sending reply...`);
-            const question = messageText.replace(/@mota\s*/i, '').trim();
-            const response = question
-                ? `You asked: "${question}"\n\nhello world`
-                : 'hello world';
+            console.log(`🎯 @mota DETECTED in message!`);
+            console.log(`   - Is Group: ${chat.isGroup}`);
+            console.log(`   - From Me: ${message.fromMe}`);
 
-            await message.reply(response);
-            console.log('✅ REPLIED!');
+            // Only respond in groups
+            if (!chat.isGroup) {
+                console.log(`   ⚠️  SKIPPED: Not a group message`);
+                return;
+            }
+
+            console.log(`   ✅ Adding to queue...`);
+            const question = messageText.replace(/@mota\s*/i, '').trim();
+
+            // Add to mota_queue
+            const queueData = {
+                message_id: message.id._serialized,
+                chat_id: chat.id._serialized,
+                chat_name: chat.name,
+                group_id: chat.isGroup ? chat.id._serialized : null,
+                sender_id: sender,
+                sender_name: message._data.notifyName || 'Unknown',
+                message_text: messageText,
+                question: question || null,
+                reply_to_message_id: message._data.quotedStanzaID || null,
+                timestamp: message.timestamp
+            };
+
+            db.addToMotaQueue(queueData);
         }
 
     } catch (error) {
@@ -162,7 +216,195 @@ async function handleMessage(eventName, message) {
     }
 }
 
+// ─── QUEUE PROCESSOR ──────────────────────────────────────────────
+
+async function processMotaQueue() {
+    try {
+        const pendingMessages = db.getPendingMotaMessages(5);
+
+        if (pendingMessages.length === 0) return;
+
+        console.log(`\n🔄 Processing ${pendingMessages.length} messages from queue...`);
+
+        // Try to get MCP tools (excluding send_message)
+        let mcpTools = null;
+        try {
+            const allTools = await mcpClient.getTools();
+            // Filter out send_message - we'll use whatsapp-web.js instead
+            mcpTools = allTools.filter(t => t.name !== 'send_message');
+            console.log(`   📋 Available MCP tools: ${mcpTools.map(t => t.name).join(', ')}`);
+        } catch (toolsError) {
+            console.log(`   ⚠️  No MCP tools available, using Claude without tools`);
+        }
+
+        for (const queueItem of pendingMessages) {
+            let processedSuccessfully = false;
+
+            try {
+                // Mark as processing
+                db.markAsProcessing(queueItem.id);
+
+                // Get the question
+                const userQuestion = queueItem.question || 'Hello';
+                console.log(`   📤 Processing: "${userQuestion}"`);
+
+                // Prepare system prompt (no mention of send_message tool)
+                const systemPrompt = `You are a helpful WhatsApp bot assistant. Answer the user's question directly and concisely.`;
+
+                // Call Claude (with or without MCP tools)
+                const claudeModel = process.env.CLAUDE_MODEL || 'claude-3-5-sonnet-20241022';
+                const messageParams = {
+                    model: claudeModel,
+                    max_tokens: 2048,
+                    system: systemPrompt,
+                    messages: [{
+                        role: 'user',
+                        content: userQuestion
+                    }]
+                };
+
+                // Add tools if available (excluding send_message)
+                if (mcpTools && mcpTools.length > 0) {
+                    messageParams.tools = mcpTools;
+                }
+
+                let response = await anthropic.messages.create(messageParams);
+                console.log(`   🤖 Claude responded with ${response.content.length} content blocks`);
+
+                // Handle tool use if Claude wants to use MCP tools (not send_message)
+                while (response.stop_reason === 'tool_use' && mcpTools && mcpTools.length > 0) {
+                    const toolUses = response.content.filter(block => block.type === 'tool_use');
+                    console.log(`   🔧 Claude wants to use ${toolUses.length} tool(s)`);
+
+                    const toolResults = [];
+                    for (const toolUse of toolUses) {
+                        console.log(`   🔌 Executing: ${toolUse.name}`);
+                        try {
+                            const result = await mcpClient.executeTool(toolUse.name, toolUse.input);
+                            toolResults.push({
+                                type: 'tool_result',
+                                tool_use_id: toolUse.id,
+                                content: JSON.stringify(result)
+                            });
+                            console.log(`   ✅ Tool executed`);
+                        } catch (error) {
+                            toolResults.push({
+                                type: 'tool_result',
+                                tool_use_id: toolUse.id,
+                                content: JSON.stringify({ error: error.message }),
+                                is_error: true
+                            });
+                            console.log(`   ❌ Tool failed: ${error.message}`);
+                        }
+                    }
+
+                    // Continue conversation
+                    response = await anthropic.messages.create({
+                        model: claudeModel,
+                        max_tokens: 2048,
+                        system: systemPrompt,
+                        tools: mcpTools,
+                        messages: [
+                            { role: 'user', content: userQuestion },
+                            { role: 'assistant', content: response.content },
+                            { role: 'user', content: toolResults }
+                        ]
+                    });
+                }
+
+                // Extract text response from Claude
+                const textBlocks = response.content.filter(block => block.type === 'text');
+                const claudeResponse = textBlocks.map(block => block.text).join('\n\n');
+
+                console.log(`   💬 Claude's response: "${claudeResponse.substring(0, 100)}..."`);
+
+                // Send reply using whatsapp-web.js with quote
+                const chat = await client.getChatById(queueItem.chat_id);
+                await chat.sendMessage("*This is a bot message*\n\n" + claudeResponse, {
+                    quotedMessageId: queueItem.message_id
+                });
+
+                console.log(`   ✅ Sent reply via WhatsApp Web (quoted)`);
+                processedSuccessfully = true;
+
+            } catch (error) {
+                console.error(`❌ Error processing queue item ${queueItem.id}:`, error.message);
+
+                // Send error message using whatsapp-web.js
+                try {
+                    let errorMessage = '❌ Sorry, something went wrong:\n\n';
+
+                    if (error.message.includes('API key')) {
+                        errorMessage += '🔑 API key issue. Contact administrator.';
+                    } else if (error.message.includes('rate limit')) {
+                        errorMessage += '⏱️ Too many requests. Try again in a few minutes.';
+                    } else if (error.message.includes('timeout')) {
+                        errorMessage += '⏱️ Request timed out. Try a simpler question.';
+                    } else {
+                        errorMessage += `⚠️ ${error.message}`;
+                    }
+
+                    const chat = await client.getChatById(queueItem.chat_id);
+                    await chat.sendMessage(errorMessage, {
+                        quotedMessageId: queueItem.message_id
+                    });
+
+                    console.log(`   📱 Error notification sent`);
+                } catch (notifyError) {
+                    console.error(`   ⚠️  Failed to send error notification: ${notifyError.message}`);
+                }
+
+            } finally {
+                // ALWAYS remove from queue
+                try {
+                    db.removeFromMotaQueue(queueItem.id);
+                    if (processedSuccessfully) {
+                        console.log(`   ✅ Removed from queue (success)`);
+                    } else {
+                        console.log(`   🗑️  Removed from queue (failed)`);
+                    }
+                } catch (removeError) {
+                    console.error(`   ⚠️  Failed to remove from queue: ${removeError.message}`);
+                }
+            }
+        }
+
+    } catch (error) {
+        console.error('❌ Error in processMotaQueue:', error.message);
+    }
+}
+
+// ─── STARTUP VALIDATION ───────────────────────────────────────────
+
+if (!process.env.ANTHROPIC_API_KEY) {
+    console.error('❌ ERROR: ANTHROPIC_API_KEY not found!');
+    console.error('Add it to .env file');
+    process.exit(1);
+}
+
 // ─── START ────────────────────────────────────────────────────────
 
+const claudeModel = process.env.CLAUDE_MODEL || 'claude-3-5-sonnet-20241022';
 console.log('🚀 Starting WhatsApp bot...');
+console.log('🤖 Claude AI integrated');
+console.log(`🧠 Model: ${claudeModel}`);
+console.log(`🔌 MCP: ${mcpUrl} (for reading tools only)`);
+console.log('📤 Messages sent via: WhatsApp Web.js (quoted replies)');
+console.log('🔍 Checking for saved session...');
 client.initialize();
+
+// ─── GRACEFUL SHUTDOWN ────────────────────────────────────────────
+
+process.on('SIGINT', async () => {
+    console.log('\n\n🛑 Shutting down...');
+    await mcpClient.close();
+    db.close();
+    process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+    console.log('\n\n🛑 Shutting down...');
+    await mcpClient.close();
+    db.close();
+    process.exit(0);
+});
