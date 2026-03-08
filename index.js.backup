@@ -275,6 +275,7 @@ async function handleMessage(eventName, message) {
                     console.log(`   ⚠️  Could not fetch quoted message chain: ${err.message}`);
                 }
             }
+            }
 
             // Add to mota_queue
             const queueData = {
@@ -349,7 +350,6 @@ async function processMotaQueue() {
                                 quotedContext += `  From: ${msg.sender}\n`;
                                 quotedContext += `  Type: ${msg.type}\n`;
                                 quotedContext += `  Content: "${msg.body}"\n\n`;
-                                quotedContext += `  metadata: "${queueItem}"\n\n`;
                             });
                             
                             console.log(`   📎 Using quoted message chain (${chain.length} message(s))`);
@@ -364,7 +364,7 @@ async function processMotaQueue() {
                 }
 
                 // Prepare system prompt (no mention of send_message tool)
-                const systemPrompt = `Don't ask any clarifications. You are a helpful WhatsApp bot assistant. Answer the user's question directly and concisely. If context is not know fetch old messages upto 2 days to gain context of asked question`;
+                const systemPrompt = `You are a helpful WhatsApp bot assistant. Answer the user's question directly and concisely.`;
 
                 // Call Claude (with or without MCP tools)
                 const claudeModel = process.env.CLAUDE_MODEL || 'claude-3-5-sonnet-20241022';

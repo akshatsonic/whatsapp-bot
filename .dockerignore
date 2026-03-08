@@ -1,0 +1,45 @@
+# Node modules (will be installed in container)
+node_modules/
+
+# Git
+.git/
+.gitignore
+
+# Environment (will be loaded separately)
+.env
+
+# Session data (will be in volumes)
+.wwebjs_auth/
+.wwebjs_cache/
+
+# Database (will be in volume)
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+*.log
+npm-debug.log*
+
+# Documentation
+*.md
+!README.md
+
+# Docker files (don't need in image)
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+.cache/

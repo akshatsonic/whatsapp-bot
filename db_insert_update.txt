@@ -1,0 +1,11 @@
+            INSERT INTO mota_queue (
+                message_id, chat_id, chat_name, group_id, sender_id, sender_name,
+                message_text, question, reply_to_message_id, 
+                quoted_message_sender, quoted_message_body, quoted_message_type,
+                timestamp
+            ) VALUES (
+                @message_id, @chat_id, @chat_name, @group_id, @sender_id, @sender_name,
+                @message_text, @question, @reply_to_message_id,
+                @quoted_message_sender, @quoted_message_body, @quoted_message_type,
+                @timestamp
+            )

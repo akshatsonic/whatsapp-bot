@@ -59,6 +59,9 @@ if (queueItems.length === 0) {
             }
         } else if (item.quoted_message_body) {
             console.log(`  [Quoted from ${item.quoted_message_sender || 'Unknown'} (${item.quoted_message_type || 'unknown'})]:`);
+            console.log(`    "${item.quoted_message_body.substring(0, 100)}${item.quoted_message_body.length > 100 ? '...' : ''}"`);
+        } (${item.quoted_message_type || 'unknown'})]:`);
+            console.log(`    "${item.quoted_message_body.substring(0, 100)}${item.quoted_message_body.length > 100 ? '...' : ''}"`);
         }
         console.log(`  Time: ${item.time}`);
         console.log('');

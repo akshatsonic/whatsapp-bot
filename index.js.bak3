@@ -188,41 +188,6 @@ client.on('call', (call) => {
 
 // ─── MESSAGE HANDLER ──────────────────────────────────────────────
 
-
-// ─── QUOTED MESSAGE CHAIN FETCHER ─────────────────────────────
-
-async function getQuotedMessageChain(message, maxDepth = 10) {
-    const chain = [];
-    let currentMsg = message;
-    let depth = 0;
-
-    while (currentMsg && currentMsg.hasQuotedMsg && depth < maxDepth) {
-        try {
-            const quotedMsg = await currentMsg.getQuotedMessage();
-            if (!quotedMsg) break;
-
-            chain.push({
-                sender: quotedMsg._data.notifyName || quotedMsg.author || 'Unknown',
-                body: quotedMsg.body || '[No text content]',
-                type: quotedMsg.type,
-                timestamp: quotedMsg.timestamp
-            });
-
-            console.log(`   📎 Level ${depth + 1}: ${chain[chain.length - 1].sender} - "${chain[chain.length - 1].body.substring(0, 40)}..."`);
-            
-            // Move up the chain
-            currentMsg = quotedMsg;
-            depth++;
-        } catch (err) {
-            console.log(`   ⚠️  Could not fetch quoted message at level ${depth + 1}: ${err.message}`);
-            break;
-        }
-    }
-
-    return chain;
-}
-
-
 async function handleMessage(eventName, message) {
     try {
         const chat = await message.getChat();
@@ -258,21 +223,19 @@ async function handleMessage(eventName, message) {
             console.log(`   ✅ Adding to queue...`);
             const question = messageText.replace(/@mota\s*/i, '').trim();
 
-            // Check if message has a quoted message and fetch the entire chain
+            // Check if message has a quoted message
             let quotedMessageData = null;
-            let quotedChain = [];
             if (message.hasQuotedMsg) {
                 try {
-                    console.log('   🔍 Fetching quoted message chain...');
-                    quotedChain = await getQuotedMessageChain(message);
-                    
-                    if (quotedChain.length > 0) {
-                        // Store the immediate quoted message for quick access
-                        quotedMessageData = quotedChain[0];
-                        console.log(`   ✅ Fetched chain of ${quotedChain.length} quoted message(s)`);
-                    }
+                    const quotedMsg = await message.getQuotedMessage();
+                    quotedMessageData = {
+                        sender: quotedMsg._data.notifyName || quotedMsg.author || 'Unknown',
+                        body: quotedMsg.body || '[No text content]',
+                        type: quotedMsg.type
+                    };
+                    console.log(`   📎 Quoted message from ${quotedMessageData.sender}: "${quotedMessageData.body.substring(0, 50)}..."`);
                 } catch (err) {
-                    console.log(`   ⚠️  Could not fetch quoted message chain: ${err.message}`);
+                    console.log(`   ⚠️  Could not fetch quoted message: ${err.message}`);
                 }
             }
 
@@ -290,7 +253,6 @@ async function handleMessage(eventName, message) {
                 quoted_message_sender: quotedMessageData?.sender || null,
                 quoted_message_body: quotedMessageData?.body || null,
                 quoted_message_type: quotedMessageData?.type || null,
-                quoted_chain: quotedChain.length > 0 ? JSON.stringify(quotedChain) : null,
                 timestamp: message.timestamp
             };
 
@@ -334,37 +296,24 @@ async function processMotaQueue() {
                 let userQuestion = queueItem.question || 'Hello';
                 console.log(`   📤 Processing: "${userQuestion}"`);
 
-                // Check if this message has quoted message context chain
+                // Check if this message has quoted message context
                 let quotedContext = '';
-                if (queueItem.quoted_chain) {
-                    try {
-                        const chain = JSON.parse(queueItem.quoted_chain);
-                        if (chain.length > 0) {
-                            quotedContext = '\n\n[CONTEXT - Conversation thread the user is asking about:]\n';
-                            quotedContext += '(Showing from oldest to newest)\n\n';
-                            
-                            // Reverse to show oldest first (thread order)
-                            chain.reverse().forEach((msg, idx) => {
-                                quotedContext += `Message ${idx + 1}:\n`;
-                                quotedContext += `  From: ${msg.sender}\n`;
-                                quotedContext += `  Type: ${msg.type}\n`;
-                                quotedContext += `  Content: "${msg.body}"\n\n`;
-                                quotedContext += `  metadata: "${queueItem}"\n\n`;
-                            });
-                            
-                            console.log(`   📎 Using quoted message chain (${chain.length} message(s))`);
-                        }
-                    } catch (err) {
-                        console.log(`   ⚠️  Error parsing quoted_chain: ${err.message}`);
-                    }
+                if (queueItem.quoted_message_body) {
+                    quotedContext = `\n\n[CONTEXT - User is asking about this quoted message:]\nFrom: ${queueItem.quoted_message_sender}\nType: ${queueItem.quoted_message_type}\nContent: "${queueItem.quoted_message_body}"`;
+                    console.log(`   📎 Using quoted message context from ${queueItem.quoted_message_sender}`);
                 }
 
+                // Add quoted context to the question if available
+
+
+
+                // Add quoted context to the question if available
                 if (quotedContext) {
                     userQuestion = userQuestion + quotedContext;
                 }
 
                 // Prepare system prompt (no mention of send_message tool)
-                const systemPrompt = `Don't ask any clarifications. You are a helpful WhatsApp bot assistant. Answer the user's question directly and concisely. If context is not know fetch old messages upto 2 days to gain context of asked question`;
+                const systemPrompt = `You are a helpful WhatsApp bot assistant. Answer the user's question directly and concisely.`;
 
                 // Call Claude (with or without MCP tools)
                 const claudeModel = process.env.CLAUDE_MODEL || 'claude-3-5-sonnet-20241022';

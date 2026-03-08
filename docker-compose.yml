@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  whatsapp-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: whatsapp-bot
+    restart: unless-stopped
+    
+    # Load environment variables from .env file
+    env_file:
+      - .env
+    
+    # Mount volumes for persistent data
+    volumes:
+      # WhatsApp session data (persists authentication)
+      - whatsapp-auth:/app/.wwebjs_auth
+      # SQLite database (persists queue)
+      - whatsapp-data:/app/data
+      # Store database in data directory
+      - ./whatsapp_bot.db:/app/whatsapp_bot.db
+    
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    
+    # Resource limits (optional - adjust as needed)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    
+    # Environment variables (can override .env)
+    environment:
+      - NODE_ENV=production
+      - TZ=Asia/Kolkata
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Network mode (use host if you need to access localhost services)
+    # Uncomment if your MCP server is on localhost
+    # network_mode: host
+
+# Named volumes for persistent data
+volumes:
+  whatsapp-auth:
+    driver: local
+  whatsapp-data:
+    driver: local
